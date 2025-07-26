@@ -1,6 +1,15 @@
 # Loan Approval Prediction API
 
-A FastAPI-based service for predicting loan approval status using machine learning models.
+A FastAPI-based service that provides automated loan approval predictions using machine learning. This solution helps financial institutions make faster, data-driven lending decisions while reducing risk and improving operational efficiency.
+
+## Problem Statement
+
+Financial institutions face significant challenges in accurately assessing loan applications. Traditional processes are often slow, subjective, and prone to human bias, leading to either increased default rates or lost business opportunities. This API addresses these challenges by providing:
+
+- **Automated Decision Making**: Instant loan approval/rejection predictions
+- **Risk Assessment**: Data-driven evaluation of applicant creditworthiness
+- **Consistency**: Eliminates human bias in lending decisions
+- **Scalability**: Handles high volumes of applications with minimal processing time
 
 ## Features
 
