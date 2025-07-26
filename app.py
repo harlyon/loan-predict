@@ -237,10 +237,10 @@ if __name__ == "__main__":
     import uvicorn
     
     # Get port from environment variable or use default
-    port = int(os.getenv("PORT", 8000))
+    port = int(os.getenv("PORT", 10000))
     
-    # Get host from environment variable or use default
-    host = os.getenv("HOST", "0.0.0.0")
+    # Always use 0.0.0.0 for Render
+    host = "0.0.0.0"
     
     # Log the startup information
     logger.info(f"Starting server on {host}:{port}")
@@ -250,6 +250,7 @@ if __name__ == "__main__":
         "app:app",
         host=host,
         port=port,
-        reload=True,
+        reload=False,  # Disable reload in production
+        workers=1,     # Use 1 worker for Render
         log_level="info"
     )
