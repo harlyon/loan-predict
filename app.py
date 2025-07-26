@@ -1,134 +1,249 @@
-from flask import Flask, request, jsonify
-import pickle
-import pandas as pd
-from flasgger import Swagger
+from fastapi import FastAPI, HTTPException, Depends, status, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, ConfigDict, field_validator
+from typing import List, Optional, Dict, Any, Union
+import os
+from datetime import datetime, timezone
 import logging
+import sys
 
-# Initialize Flask app
-app = Flask(__name__)
-Swagger(app)
+# Add the project root to the Python path
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+# Import the LoanPredictor utility
+from utils.predict import LoanPredictor
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Constants
-MODEL_PATH = 'loan_approval_model.pkl'
-SCALER_PATH = 'scaler.pkl'
-EXPECTED_FEATURE_ORDER = ['Age', 'Income', 'Employment_Length', 'Public_Records', 'Loan_Amount', 'Loan_Term', 'Loan_Purpose']
-REQUIRED_FIELDS = EXPECTED_FEATURE_ORDER
+# Initialize FastAPI app
+app = FastAPI(
+    title="Loan Approval Prediction API",
+    description="API for predicting loan approval status using machine learning",
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc"
+)
 
-# Load the model and scaler
+# Enable CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Configuration
+MODEL_PATH = os.getenv("MODEL_PATH", "loan_approval_model.pkl")
+SCALER_PATH = os.getenv("SCALER_PATH", "scaler.pkl")
+
+# Initialize LoanPredictor
 try:
-    model = pickle.load(open(MODEL_PATH, 'rb'))
-    scaler = pickle.load(open(SCALER_PATH, 'rb'))
-    logger.info("Model and scaler loaded successfully.")
-except FileNotFoundError:
-    logger.error(f"Error: Model or scaler file not found. Ensure '{MODEL_PATH}' and '{SCALER_PATH}' are in the correct directory.")
-    exit()
+    predictor = LoanPredictor(MODEL_PATH, SCALER_PATH)
+    logger.info("Successfully initialized LoanPredictor")
 except Exception as e:
-    logger.error(f"Error loading model or scaler: {e}")
-    exit()
+    logger.error(f"Failed to initialize LoanPredictor: {e}")
+    predictor = None
 
-# Helper function to validate input data
-def validate_input(data: dict) -> list:
+# Request/Response Models
+class LoanApplication(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "Age": 30,
+                "Income": 50000,
+                "Employment_Length": 5,
+                "Public_Records": 0,
+                "Loan_Amount": 10000,
+                "Loan_Term": 36,
+                "Loan_Purpose": 1
+            }
+        }
+    )
+    
+    Age: int = Field(..., gt=0, le=100, description="Age of the applicant")
+    Income: float = Field(..., gt=0, description="Annual income of the applicant")
+    Employment_Length: int = Field(..., ge=0, description="Length of employment in years")
+    Public_Records: int = Field(..., ge=0, description="Number of public records")
+    Loan_Amount: float = Field(..., gt=0, description="Requested loan amount")
+    Loan_Term: int = Field(..., gt=0, description="Loan term in months")
+    Loan_Purpose: int = Field(..., ge=0, le=3, description="Purpose of the loan (0: medical, 1: debt_consolidation, 2: car, 3: home_improvement)")
+    
+    @field_validator('Loan_Purpose')
+    def validate_loan_purpose(cls, v):
+        if v not in [0, 1, 2, 3]:
+            raise ValueError('Loan_Purpose must be between 0 and 3')
+        return v
+
+class PredictionResult(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "loan_status": 1,
+                "probability": 0.95,
+                "message": "Loan approved"
+            }
+        }
+    )
+    
+    loan_status: int = Field(..., description="1 if approved, 0 if not approved")
+    probability: float = Field(..., ge=0, le=1, description="Confidence score of the prediction")
+    message: str = Field(..., description="Human-readable prediction result")
+
+# Dependency to get the predictor
+async def get_predictor():
+    if predictor is None:
+        raise HTTPException(status_code=500, detail="Predictor not initialized")
+    return predictor
+
+# Exception Handlers
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
     errors = []
-    for field in REQUIRED_FIELDS:
-        if field not in data:
-            errors.append(f'Missing field: {field}')
+    for error in exc.errors():
+        # Get the field location, handling both body and path parameters
+        loc = error["loc"]
+        if len(loc) > 1 and loc[0] in ("body", "query", "path"):
+            field = ".".join(str(l) for l in loc[1:] if l != "body")
         else:
-            try:
-                float(data[field])  # Ensure all fields are numeric
-            except (ValueError, TypeError):
-                errors.append(f'Invalid type for field: {field}. Expected numeric value.')
-    return errors
+            field = ".".join(str(l) for l in loc if l != "body")
+            
+        errors.append({
+            "field": field or "request body",
+            "message": error.get("msg", "Validation error"),
+            "type": error.get("type", "value_error")
+        })
+    
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={
+            "detail": errors,
+            "status": "error",
+            "message": "Validation error"
+        },
+    )
 
-# Root route
-@app.route('/')
-def home():
-    return "Welcome to the Loan Approval API! Use the /predict endpoint to make predictions."
-
-@app.route('/predict', methods=['POST'])
-def predict():
+# Health check endpoint
+@app.get("/", tags=["Health"])
+async def root():
     """
-    Predict Loan Approval
-    ---
-    tags:
-      - Predictions
-    parameters:
-      - name: body
-        in: body
-        required: true
-        schema:
-          type: object
-          properties:
-            Age:
-              type: number
-              example: 30
-            Income:
-              type: number
-              example: 50000
-            Employment_Length:
-              type: number
-              example: 5
-            Public_Records:
-              type: number
-              example: 0
-            Loan_Amount:
-              type: number
-              example: 10000
-            Loan_Term:
-              type: number
-              example: 36
-            Loan_Purpose:
-              type: number
-              example: 1
-    responses:
-      200:
-        description: Prediction result
-        schema:
-          type: object
-          properties:
-            Loan_Status:
-              type: integer
-              example: 1
-            message:
-              type: string
-              example: "Loan will likely be approved"
-      400:
-        description: Invalid input
-      500:
-        description: Internal server error
+    Health check endpoint to verify the API is running.
+    """
+    return {
+        "status": "healthy",
+        "message": "Loan Approval Prediction API is running",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "model_loaded": predictor is not None
+    }
+
+# Model info endpoint
+@app.get("/model-info", tags=["Model"])
+async def get_model_info(predictor: LoanPredictor = Depends(get_predictor)):
+    """
+    Get information about the loaded model.
+    
+    Returns:
+        Dict containing model information including features, mappings, and status.
     """
     try:
-        # Get data from request
-        data = request.get_json()
-        if not data:
-            return jsonify({'error': 'No input data provided.'}), 400
-
-        # Validate input data
-        errors = validate_input(data)
-        if errors:
-            return jsonify({'error': 'Invalid input', 'details': errors}), 400
-
-        # Convert data to DataFrame and reorder columns
-        input_df = pd.DataFrame([data])[EXPECTED_FEATURE_ORDER]
-
-        # Scale the input data
-        input_scaled = scaler.transform(input_df)
-
-        # Make prediction
-        prediction = model.predict(input_scaled)
-
-        # Prepare response
-        loan_status = "Loan will likely be approved" if prediction[0] == 1 else "Loan will unlikely be approved"
-        output = {'Loan_Status': int(prediction[0]), 'message': loan_status}
-
-        return jsonify(output), 200
-
+        model_info = predictor.get_model_info()
+        return {
+            "status": "success",
+            "data": model_info
+        }
     except Exception as e:
-        logger.error(f"An unexpected error occurred: {e}")
-        return jsonify({'error': 'An unexpected error occurred. Please try again later.'}), 500
+        logger.error(f"Error getting model info: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "status": "error",
+                "message": "Failed to get model information",
+                "error": str(e)
+            }
+        )
 
-if __name__ == '__main__':
-    app.run(port=5000, debug=True)
+# Prediction endpoint
+@app.post("/predict", response_model=PredictionResult, tags=["Prediction"])
+async def predict_loan_status(
+    application: LoanApplication,
+    predictor: LoanPredictor = Depends(get_predictor)
+):
+    """
+    Predict loan approval status for a single application.
+    
+    - **Age**: Age of the applicant (1-100)
+    - **Income**: Annual income of the applicant (> 0)
+    - **Employment_Length**: Length of employment in years (>= 0)
+    - **Public_Records**: Number of public records (>= 0)
+    - **Loan_Amount**: Requested loan amount (> 0)
+    - **Loan_Term**: Loan term in months (> 0)
+    - **Loan_Purpose**: Purpose of the loan (0-3)
+    """
+    try:
+        return predictor.predict_single(application.model_dump())
+    except ValueError as e:
+        logger.error(f"Validation error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"error": str(e)}
+        )
+    except Exception as e:
+        logger.error(f"Prediction error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error": "Internal server error during prediction"}
+        )
+
+# Batch prediction endpoint
+@app.post("/batch-predict", tags=["Prediction"])
+async def batch_predict(
+    applications: List[LoanApplication],
+    predictor: LoanPredictor = Depends(get_predictor)
+):
+    """
+    Predict loan approval status for multiple applications in a single request.
+    
+    Accepts an array of loan applications and returns predictions for each one.
+    If an error occurs for a specific application, it will be noted in the response
+    without failing the entire batch.
+    """
+    try:
+        # Convert Pydantic models to dictionaries
+        app_dicts = [app.model_dump() for app in applications]
+        
+        # Get predictions
+        results = predictor.predict_batch(app_dicts)
+        
+        return {"predictions": results}
+        
+    except ValueError as e:
+        logger.error(f"Validation error in batch prediction: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"error": str(e)}
+        )
+    except Exception as e:
+        logger.error(f"Batch prediction error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error": "Internal server error during batch prediction"}
+        )
+
+if __name__ == "__main__":
+    import uvicorn
+    
+    # Get port from environment variable or use default
+    port = int(os.getenv("PORT", 8000))
+    
+    # Run the FastAPI application
+    uvicorn.run(
+        "app:app",
+        host="0.0.0.0",
+        port=port,
+        reload=True,
+        log_level="info"
+    )
