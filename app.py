@@ -239,10 +239,16 @@ if __name__ == "__main__":
     # Get port from environment variable or use default
     port = int(os.getenv("PORT", 8000))
     
+    # Get host from environment variable or use default
+    host = os.getenv("HOST", "0.0.0.0")
+    
+    # Log the startup information
+    logger.info(f"Starting server on {host}:{port}")
+    
     # Run the FastAPI application
     uvicorn.run(
         "app:app",
-        host="0.0.0.0",
+        host=host,
         port=port,
         reload=True,
         log_level="info"
