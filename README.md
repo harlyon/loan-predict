@@ -13,7 +13,7 @@ Financial institutions face significant challenges in accurately assessing loan 
 
 ## Demo
 - App: https://stackblitzstartersvorawhbb-a4gy--8080--96435430.local-credentialless.webcontainer.io/
-- Api: https://loan-predict-q89g.onrender.com/
+- Api: [https://loan-predict-q89g.onrender.com/](https://loan-predict-q89g.onrender.com/docs#)
 
 ## Features
 
