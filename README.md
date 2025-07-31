@@ -11,6 +11,10 @@ Financial institutions face significant challenges in accurately assessing loan 
 - **Consistency**: Eliminates human bias in lending decisions
 - **Scalability**: Handles high volumes of applications with minimal processing time
 
+## Demo
+- App: https://stackblitzstartersvorawhbb-a4gy--8080--96435430.local-credentialless.webcontainer.io/
+- Api: https://loan-predict-q89g.onrender.com/
+
 ## Features
 
 - Predict loan approval status for individual applications
